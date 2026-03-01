@@ -4,6 +4,7 @@ from src.backtest.engine import SimpleBacktester, BacktestConfig
 from src.reporting.plots import plot_equity
 from src.reporting.metrics import compute_metrics
 from src.reporting.trades import build_trade_log
+from src.reporting.sweep import run_momentum_sweep
 
 def main() -> None:
     df = load_yahoo_ohlcv("SPY", start="2015-01-01")
@@ -46,6 +47,23 @@ def main() -> None:
         else:
             print(f"{k}: {v}")
     print(res[["close", "signal", "pos", "strat_ret", "equity"]].tail(10))
+    print("\n=== Momentum Parameter Sweep ===")
+
+    cfg = BacktestConfig(fee_bps=1.0, slippage_bps=1.0, initial_cash=10_000.0)
+    lookbacks = [5, 10, 20, 50, 100, 200]
+
+    sweep = run_momentum_sweep(df, lookbacks=lookbacks, cfg=cfg, threshold=0.01)
+
+    cols = ["Total Return", "CAGR", "Sharpe", "Max Drawdown", "Trades", "Trades (closed)"]
+
+    print(
+        sweep[cols]
+        .sort_values(["Sharpe"], ascending=False)
+        .round(4)
+    )
+
+    sweep.to_csv("sweep_results.csv")
+    print("Saved: sweep_results.csv")
     plot_equity(res, title="SPY Momentum (lookback=20)", save_path="equity_spy_mom.png")
 
 if __name__ == "__main__":

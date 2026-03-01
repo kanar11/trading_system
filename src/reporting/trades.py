@@ -34,7 +34,8 @@ def build_trade_log(result: pd.DataFrame) -> pd.DataFrame:
                 "entry_date": entry_date,
                 "exit_date": exit_date,
                 "direction": current_pos,
-                "entry_price": exit_price,
+                "entry_price": entry_price,
+                "exit_price": exit_price,
                 "trade_return": trade_return,
             })
 
@@ -48,7 +49,21 @@ def build_trade_log(result: pd.DataFrame) -> pd.DataFrame:
             entry_price = price
         else:
             current_pos = 0
+#close open position at the end (mark-to-market)
+    if current_pos != 0 and entry_date is not None:
+        exit_date = df.index[-1]
+        exit_price = float(df["close"].iloc[-1])
+        trade_return = current_pos * (exit_price / entry_price - 1.0)
 
+        trades.append({
+            "entry_date": entry_date,
+            "exit_date": exit_date,
+            "direction": current_pos,
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "trade_return": trade_return,
+
+        })
     trade_df = pd.DataFrame(trades)
 
     if not trade_df.empty:
