@@ -28,7 +28,8 @@ def run_grid_search():
             strategy_df = momentum_strategy(
                 df.copy(),
                 lookback=lookback,
-                threshold=threshold
+                threshold=threshold,
+                use_sma_filter=True
             )
 
             backtest_df, trade_log = backtest_strategy(
