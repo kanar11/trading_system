@@ -34,7 +34,9 @@ def run_grid_search():
 
             backtest_df, trade_log = backtest_strategy(
                 strategy_df,
-                transaction_cost=transaction_cost
+                transaction_cost=transaction_cost,
+                vol_target=0.15,
+                vol_window=20
             )
 
             metrics = calculate_metrics(backtest_df["strategy_returns"])
@@ -43,6 +45,8 @@ def run_grid_search():
                 "ticker": ticker,
                 "lookback": lookback,
                 "threshold": threshold,
+                "vol_target": 0.15,
+                "vol_window": 20,
                 "total_return": metrics["Total Return"],
                 "cagr": metrics["CAGR"],
                 "sharpe": metrics["Sharpe Ratio"],

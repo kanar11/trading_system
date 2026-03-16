@@ -1,81 +1,107 @@
-from src.data.loader import load_yahoo_ohlcv
-from src.strategy.momentum import momentum_signal
-from src.backtest.engine import SimpleBacktester, BacktestConfig
-from src.reporting.plots import plot_equity
-from src.reporting.metrics import compute_metrics
-from src.reporting.trades import build_trade_log
-from src.reporting.sweep import run_momentum_sweep
+import pandas as pd
 
-def main() -> None:
-    df = load_yahoo_ohlcv("SPY", start="2010-01-01")
-    split_date = "2019-01-01"
 
-    train = df[df.index < split_date]
-    test = df[df.index >= split_date]
+def backtest_strategy(df, transaction_cost=0.001, vol_target=None, vol_window=20):
+    df = df.copy()
 
-    sig = momentum_signal(test["close"], lookback=200, threshold=0.02)
+    if "signal" not in df.columns:
+        raise ValueError("DataFrame must contain a 'signal' column.")
 
-    bt = SimpleBacktester(
-        test,
-        BacktestConfig(fee_bps=1.0, slippage_bps=1.0, initial_cash=10_000.0)
-    )
+    if "close" not in df.columns:
+        raise ValueError("DataFrame must contain a 'close' column.")
 
-    res = bt.run(sig)
+    # pozycja od następnej sesji
+    df["position"] = df["signal"].shift(1).fillna(0)
 
-    trade_log = build_trade_log(res)
+    # dzienne zwroty rynku
+    df["market_returns"] = df["close"].pct_change().fillna(0)
 
-    metrics = compute_metrics(res)
-    metrics["Trades (closed)"] = len(trade_log)
+    # volatility targeting
+    if vol_target is not None:
+        df["realized_vol"] = df["market_returns"].rolling(vol_window).std() * (252 ** 0.5)
+        df["vol_scalar"] = vol_target / df["realized_vol"]
+        df["vol_scalar"] = df["vol_scalar"].clip(upper=3.0)
+        df["vol_scalar"] = df["vol_scalar"].fillna(0)
 
-    print("\n=== Trade Log (last 5) ===")
-    print(trade_log.tail(5))
-
-    trade_log.to_csv("trade_log_spy_mom.csv", index=False)
-    print("Saved: trade_log_spy_mom.csv")
-
-    if len(trade_log) > 0:
-        win_rate = (trade_log["trade_return"] > 0).mean()
-        avg_trade = trade_log["trade_return"].mean()
-
-        print(f"\nTrades in log: {len(trade_log)}")
-        print(f"Win rate: {win_rate:.2%}")
-        print(f"Avg trade return: {avg_trade:.4%}")
+        df["scaled_position"] = df["position"] * df["vol_scalar"]
     else:
-        print("No trades found!")
+        df["scaled_position"] = df["position"]
 
+    # zwroty strategii przed kosztami
+    df["strategy_returns_gross"] = df["scaled_position"] * df["market_returns"]
 
-    print ("\n=== Strategy Metrics ===")
-    for k, v in metrics.items():
-        if isinstance(v, float):
-            print(f"{k}: {v:.4f}")
+    # koszt przy zmianie pozycji
+    df["trade"] = df["scaled_position"].diff().abs().fillna(0)
+    df["transaction_cost"] = df["trade"] * transaction_cost
+
+    # zwroty po kosztach
+    df["strategy_returns"] = df["strategy_returns_gross"] - df["transaction_cost"]
+
+    # krzywa kapitału
+    df["equity_curve"] = (1 + df["strategy_returns"]).cumprod()
+
+    # prosty trade log oparty o surową pozycję kierunkową
+    trade_log = []
+    current_position = 0
+    entry_date = None
+    entry_price = None
+
+    for date, row in df.iterrows():
+        new_position = row["position"]
+        price = row["close"]
+
+        if current_position == 0 and new_position != 0:
+            current_position = new_position
+            entry_date = date
+            entry_price = price
+
+        elif current_position != 0 and new_position != current_position:
+            exit_date = date
+            exit_price = price
+
+            if current_position == 1:
+                trade_return = (exit_price / entry_price) - 1
+            else:
+                trade_return = (entry_price / exit_price) - 1
+
+            trade_log.append({
+                "entry_date": entry_date,
+                "exit_date": exit_date,
+                "direction": int(current_position),
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "trade_return": trade_return,
+                "holding_days": (exit_date - entry_date).days,
+            })
+
+            if new_position != 0:
+                current_position = new_position
+                entry_date = date
+                entry_price = price
+            else:
+                current_position = 0
+                entry_date = None
+                entry_price = None
+
+    if current_position != 0 and entry_date is not None:
+        exit_date = df.index[-1]
+        exit_price = df["close"].iloc[-1]
+
+        if current_position == 1:
+            trade_return = (exit_price / entry_price) - 1
         else:
-            print(f"{k}: {v}")
-    print(res[["close", "signal", "pos", "strat_ret", "equity"]].tail(10))
-    print("\n=== Momentum Parameter Sweep ===")
+            trade_return = (entry_price / exit_price) - 1
 
-    cfg = BacktestConfig(fee_bps=1.0, slippage_bps=1.0, initial_cash=10_000.0)
-    lookbacks = [5, 10, 20, 50, 100, 200]
+        trade_log.append({
+            "entry_date": entry_date,
+            "exit_date": exit_date,
+            "direction": int(current_position),
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "trade_return": trade_return,
+            "holding_days": (exit_date - entry_date).days,
+        })
 
-    thresholds = [0.005, 0.01, 0.02]
+    trade_log_df = pd.DataFrame(trade_log)
 
-    sweep = run_momentum_sweep(
-        train,
-        lookbacks=lookbacks,
-        thresholds=thresholds,
-        cfg=cfg
-    )
-
-    cols = ["lookback", "threshold", "Total Return", "CAGR", "Sharpe", "Max Drawdown", "Trades", "Trades (closed)"]
-
-    top = sweep[cols].sort_values(["Sharpe"], ascending=False).round(4)
-
-    print("\n=== Top 5 Parameter Sets ===")
-    print(top.head(5))
-
-    sweep.to_csv("sweep_results.csv")
-    print("Saved: sweep_results.csv")
-    plot_equity(res, title="SPY Momentum (lookback=20)", save_path="equity_spy_mom.png")
-
-if __name__ == "__main__":
-    main()
-
+    return df, trade_log_df
